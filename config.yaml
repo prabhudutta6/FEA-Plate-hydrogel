@@ -1,0 +1,83 @@
+# config.yaml - ALL settings for the hydrogel plate PINN (v0.3)
+# Units: SI (metres, pascal, kg/m^3). Edit this file, not the scripts.
+# After any change, run Stage 1 again (Stage 2 reads the settings from data/<case>.npz).
+
+case: case_05
+geometry: {length_m: 0.20, width_m: 0.10, thickness_m: 0.02}
+boundary: CCCC            # method rayleigh: CCCC | CFFF | FCFC | CFCF ;  method strong: CCCC | SSSS (SSSS = test only)
+
+# ---- v0.3 (spec_rq.md section 2) ----
+method: rayleigh          # rayleigh (new, v0.3) | strong (old v0.2 path, keeps working)
+clamp_type: full          # full = w=0, psi_x=psi_y=0 (Abaqus ENCASTRE) | senjanovic = w=0, normal psi=0
+edges: {x0: C, xa: C, y0: C, yb: C}   # must match boundary: (spec_rq.md section 6); Stage 1 checks it
+                          #   CCCC {x0: C, xa: C, y0: C, yb: C}   CFFF {x0: C, xa: F, y0: F, yb: F}
+                          #   FCFC {x0: C, xa: C, y0: F, yb: F}   CFCF {x0: F, xa: F, y0: C, yb: C}
+material:
+  mu1_Pa: 60012.1349      # Ogden mu1 (Abaqus form); initial shear modulus mu0 = mu1
+  alpha1: -5.8643         # stored only; no effect on small-amplitude frequencies
+  poisson: 0.5            # incompressible (D1 = 0)
+  density_kg_m3: 1300     # CONFIRM (older project doc assumed 1000)
+  shear_factor_k: 0.8333333
+# ---- pinn: network shape + seed (used by BOTH methods); training keys below are method strong only ----
+pinn:
+  n_modes: 5
+  hidden_layers: 4
+  neurons: 64
+  activation: sin         # sin | tanh
+  sine_w0: 1.0            # first-layer frequency factor for sin (tune later)
+  n_interior: 4000
+  n_boundary_per_edge: 100
+  adam_iters: 20000
+  adam_lr: 1.0e-3
+  omega_lr: 1.0e-2        # separate learning rate for the eigenvalue
+  lbfgs_iters: 3000
+  weights: {pde: 1.0, bc: 10.0, norm: 100.0, ortho: 10.0}
+  # norm changed from the spec value 1.0 -> 100.0: with 1.0 the network collapsed to
+  # the trivial answer w = 0 in a test run (mean(w^2) -> 0). 100.0 fixed it.
+  transfer_from_previous_mode: true
+  seed: 0
+  # ---- extra keys added in the v0.1 code (not in the spec table) ----
+  dtype: float32          # float32 (faster) | float64 (safer for 4th derivatives)
+  resample_every: 1000    # new random interior points every N Adam iterations (0 = off)
+  pde_scale: lambda0      # lambda0: divide PDE residual by the fixed start guess lambda0 | none
+  log_every: 500          # print / save a log line every N iterations (both methods)
+
+# ---- rayleigh: training settings of method rayleigh (spec_rq.md section 2) ----
+rayleigh:
+  quad_points: [64, 32]   # Gauss-Legendre points in xi, eta
+  n_modes: 5              # spec_rq.md 10a step 3: try 2 first, then 5
+  n_restarts: 2           # seeds per mode; keep the one with LOWEST lambda
+  adam_iters: 6000
+  adam_lr: 1.0e-3
+  lbfgs_iters: 1500
+  early_stop_rel: 1.0e-6  # stop when lambda changes less than this over early_stop_window iters
+  early_stop_window: 500  # extra key (not in the spec table): the "500 iters" of early_stop_rel
+  scale_weight: 1.0e-2    # weight of (log <f,f>)^2
+  dtype: float32          # float32 | float64
+
+# ---- fea: settings of the standalone FEA (spec_fea.md section 2) ----
+# The FEA reads only: case, geometry, material, boundary, edges (cross-check), clamp_type, and this section.
+# The pinn: and rayleigh: sections above are NOT used by the FEA.
+fea:
+  model: senjanovic           # senjanovic (Model A, BFS) | mindlin3 (Model B, MITC4)
+  mesh: [40, 20]              # elements in x (length a) and y (width b); square elements (a/b = 2)
+  mesh_B: [160, 80]           # extra key: default mesh for Model B (MITC4 converges slower, spec 4.2)
+  convergence_meshes: [[10, 5], [20, 10], [40, 20], [80, 40], [160, 80]]
+  n_modes: 5                  # modes reported
+  n_extra: 5                  # extra modes solved (Abaqus pairing, close modes)
+  gauss_A: 4                  # Gauss points per direction, Model A
+  gauss_B: 2                  # Gauss points per direction, Model B (MITC4)
+  shear_factor: null          # null = use material.shear_factor_k; or 0.822 / 0.882 for k-sensitivity
+  grid: [101, 51]             # points in x, y for mode-shape output (same as PINN post-processing)
+  # Optional comparisons (4_compare_all.py). Empty or missing -> that comparison is skipped.
+  pinn_results_dir: results   # folder with <case>_<boundary>/frequencies.json from the PINN
+  abaqus_dir: .               # folder with the Abaqus .xlsx
+  abaqus_file: "Abaqus Natural Frequencies – All BCs (case_05).xlsx"
+  # Which column of the Abaqus sheet belongs to which BC. The xlsx labels look swapped
+  # (see its 'PINN vs Abaqus' sheet): the column labelled CFCF holds cantilever (CFFF) values,
+  # and no column is a valid CFCF run. null = no Abaqus comparison for that BC.
+  abaqus_columns:
+    CCCC: "CCCC – Fine (Job-2) (Hz)"
+    CFFF: "CFCF (Hz)"
+    FCFC: "FCFC (Hz)"
+    CFCF: null
